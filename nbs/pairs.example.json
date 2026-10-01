@@ -1,0 +1,42 @@
+{
+  "timezone": "America/New_York",
+  "pairs": {
+    "accounts": {
+      "left": {
+        "source": "oracle",
+        "conn": "pcds",
+        "table": "OWNER.ACCT_CURR",
+        "as_of": {
+          "column": "EFF_DT"
+        },
+        "count": "all"
+      },
+      "right": {
+        "table": "catalog.schema.accounts",
+        "date_col": "dw_bus_dt",
+        "date_type": "date",
+        "offset_days": 0
+      },
+      "key": "ACCT_ID",
+      "sample": 0.1
+    },
+    "cards": {
+      "left": {
+        "source": "oracle",
+        "conn": "pcds",
+        "table": "OWNER.CARD_CURR",
+        "as_of": {
+          "offset_days": 1
+        },
+        "where": "STATUS <> 'X'"
+      },
+      "right": {
+        "table": "catalog.schema.cards",
+        "where": "src_sys = 'CARDS'"
+      },
+      "col_map": {
+        "CARD_NO": "card_nbr"
+      }
+    }
+  }
+}
