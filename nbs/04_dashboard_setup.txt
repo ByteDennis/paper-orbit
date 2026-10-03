@@ -221,4 +221,3 @@ Operational order
 3. Databricks Notebook 02 runs afterward and fills the Right result.
 4. The dashboard refreshes from the same table.
 5. Human review can mark the latest row CHECKED_SUCCEEDED to retire the pair.
-
