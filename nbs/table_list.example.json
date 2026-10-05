@@ -1,5 +1,6 @@
 {
   "pair_name": "accounts",
+  "enabled": true,
   "config_version": 1,
   "timezone": "America/New_York",
   "review_status": "NOT_CHECKED",
