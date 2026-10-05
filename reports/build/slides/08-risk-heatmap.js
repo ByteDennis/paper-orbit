@@ -49,14 +49,15 @@ module.exports = {
     }
     LEVELS.forEach((t, c) => txt(slide, t, { x: gx + c * cwid, y: gy + 3 * chei + 0.05, w: cwid, h: 0.25, fontSize: 10, color: C.text2, align: "center" }));
     label(slide, "Impact", { x: gx, y: gy + 3 * chei + 0.32, w: 3 * cwid, h: 0.25, color: C.text2, align: "center" });
-    const used = {};
+    const counts = {};
+    risks.forEach((rk) => { counts[rk.l + "-" + rk.i] = (counts[rk.l + "-" + rk.i] || 0) + 1; });
+    const placed = {};
     risks.forEach((rk, n) => {
       const key = rk.l + "-" + rk.i;
-      const slot = used[key] || 0;
-      used[key] = slot + 1;
-      const cx = gx + (rk.i - 1) * cwid + cwid / 2 - 0.2 + (slot ? 0.28 : 0) - (used[key] > 1 || slot ? 0.14 : 0);
+      const slot = placed[key] || 0;
+      placed[key] = slot + 1;
+      const cx = gx + (rk.i - 1) * cwid + cwid / 2 - 0.2 + (slot - (counts[key] - 1) / 2) * 0.5;
       const cy = gy + (3 - rk.l) * chei + chei / 2 - 0.2;
-      const dark = rk.l + rk.i >= 5;
       badge(pres, slide, String(n + 1), { x: cx, y: cy, d: 0.4, fill: "FFFFFF", line: { color: T.colors.accent1, width: 1 }, color: T.colors.accent1, fontSize: 11 });
     });
 

@@ -29,7 +29,7 @@ const sections = [
   ]],
   ["Risks and mitigations", [
     "Vendor delivery slip → contractual penalties and a phased go-live",
-    "Customer fairness → Compliance-approved scripts and a pre-launch conduct review",
+    "Fairness → Compliance-approved scripts and a pre-launch conduct review",
   ]],
 ];
 
@@ -52,7 +52,7 @@ module.exports = {
     });
     const cy = TOP + 1.4;
     slide.addChart(pres.ChartType.bar, [{ name: "Cumulative net cash flow", labels: quarters, values: cumulative }], Object.assign(chartBase(T), {
-      x: M, y: cy, w: 6.4, h: 3.5,
+      x: M, y: cy, w: 6.4, h: 3.45,
       title: "Cumulative net cash flow, $m — break-even in Q7",
       barDir: "col",
       barGapWidthPct: 60,
@@ -61,7 +61,6 @@ module.exports = {
       showValue: true,
       dataLabelPosition: "outEnd",
       dataLabelFormatCode: "+0.0;-0.0",
-      dataLabelFontSize: 9,
       valAxisMinVal: -4,
       valAxisMaxVal: 8,
       valAxisMajorUnit: 2,
@@ -73,13 +72,13 @@ module.exports = {
       label(slide, h, { x: rx, y, w: rw, h: 0.25, color: C.accent1 });
       const lines = items.length;
       txt(slide, items.map((t, i) => ({ text: t, options: { bullet: { indent: 12 }, breakLine: i < lines - 1, paraSpaceAfter: 2 } })), { x: rx, y: y + 0.27, w: rw, h: lines * 0.22 + 0.05, fontSize: 11.5, color: C.text1 });
-      y += 0.27 + lines * 0.22 + 0.22;
+      y += 0.27 + lines * 0.22 + 0.17;
     });
-    const dy = cy + 3.65;
-    card(pres, slide, { x: rx, y: dy, w: rw, h: 0.85, fill: { color: C.background2 } });
+    const dy = cy + 2.72;
+    card(pres, slide, { x: rx, y: dy, w: rw, h: 0.78, fill: { color: C.background2 } });
     txt(slide, [
       { text: "Decision requested: ", options: { bold: true, color: C.accent1 } },
       { text: "approve Phase 1 funding of $1.9m (design and vendor selection) by 31 October; Phase 2 is subject to pilot results in February.", options: { color: C.text1 } },
-    ], { x: rx + 0.2, y: dy + 0.1, w: rw - 0.4, h: 0.65, fontSize: 12, valign: "middle" });
+    ], { x: rx + 0.2, y: dy + 0.08, w: rw - 0.4, h: 0.62, fontSize: 12, valign: "middle" });
   },
 };

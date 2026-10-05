@@ -45,27 +45,29 @@ module.exports = {
     const tw = (CW - 0.75) / 4;
     facts.forEach(([l, v, s], i) => {
       const x = M + i * (tw + 0.25);
-      card(pres, slide, { x, y: TOP, w: tw, h: 1.05, fill: { color: C.background2 } });
+      card(pres, slide, { x, y: TOP, w: tw, h: 1.0, fill: { color: C.background2 } });
       txt(slide, l, { x: x + 0.2, y: TOP + 0.08, w: tw - 0.4, h: 0.26, fontSize: 11, color: C.text2 });
-      txt(slide, v, { x: x + 0.2, y: TOP + 0.32, w: tw - 0.4, h: 0.45, fontSize: 22, bold: true, color: C.accent1 });
-      txt(slide, s, { x: x + 0.2, y: TOP + 0.76, w: tw - 0.4, h: 0.25, fontSize: 10, color: C.text2 });
+      txt(slide, v, { x: x + 0.2, y: TOP + 0.3, w: tw - 0.4, h: 0.45, fontSize: 22, bold: true, color: C.accent1 });
+      txt(slide, s, { x: x + 0.2, y: TOP + 0.72, w: tw - 0.4, h: 0.25, fontSize: 10, color: C.text2 });
     });
-    const ly = TOP + 1.6;
+    const ly = TOP + 1.5;
     const lx0 = M + 0.3;
     const step = (CW - 0.6) / (events.length - 1);
     line(pres, slide, lx0, ly, W - M - 0.3, ly, { color: "5A5A5A", width: 1.5 });
     events.forEach(([t, d], i) => {
       const x = lx0 + i * step;
+      const edge = i === 0 ? "left" : i === events.length - 1 ? "right" : "center";
+      const dx = edge === "left" ? M : edge === "right" ? W - M - 2.0 : x - 1.0;
       dot(pres, slide, x - 0.11, ly - 0.11, 0.22, i === events.length - 1 ? T.colors.accent3 : T.colors.accent1);
-      txt(slide, t, { x: x - 0.8, y: ly - 0.42, w: 1.6, h: 0.25, fontSize: 11, bold: true, color: C.text1, align: "center" });
-      txt(slide, d, { x: x - 1.2, y: ly + 0.2, w: 2.4, h: 0.7, fontSize: 10, color: C.text2, align: "center" });
+      txt(slide, t, { x: dx, y: ly - 0.4, w: 2.0, h: 0.25, fontSize: 11, bold: true, color: C.text1, align: edge });
+      txt(slide, d, { x: dx, y: ly + 0.2, w: 2.0, h: 0.65, fontSize: 10, color: C.text2, align: edge });
     });
-    const by = TOP + 2.75;
+    const by = TOP + 2.55;
     const lw = 6.0;
     label(slide, "Root cause", { x: M, y: by, w: lw, h: 0.25, color: C.accent1 });
-    txt(slide, rootCause, { x: M, y: by + 0.28, w: lw, h: 1.15, fontSize: 11.5, color: C.text1 });
-    label(slide, "Customer impact", { x: M, y: by + 1.5, w: lw, h: 0.25, color: C.accent1 });
-    txt(slide, impact, { x: M, y: by + 1.78, w: lw, h: 0.7, fontSize: 11.5, color: C.text1 });
+    txt(slide, rootCause, { x: M, y: by + 0.28, w: lw, h: 0.95, fontSize: 11.5, color: C.text1 });
+    label(slide, "Customer impact", { x: M, y: by + 1.35, w: lw, h: 0.25, color: C.accent1 });
+    txt(slide, impact, { x: M, y: by + 1.63, w: lw, h: 0.7, fontSize: 11.5, color: C.text1 });
     const tx = M + lw + 0.35;
     const tbw = W - M - tx;
     label(slide, "Actions", { x: tx, y: by, w: tbw, h: 0.25, color: C.accent1 });
@@ -76,7 +78,7 @@ module.exports = {
       cell(statusRuns(STATE[a[3]][0], STATE[a[3]][1], T.colors.dk1)),
     ]);
     slide.addTable([headerRow(["Action", "Owner", "Due", "Status"], { color: T.colors.dk2 }), ...body], {
-      x: tx, y: by + 0.3, w: tbw, colW: [3.0, 1.25, 0.7, tbw - 4.95], rowH: [0.3, 0.55, 0.55, 0.55],
+      x: tx, y: by + 0.3, w: tbw, colW: [2.85, 1.2, 0.65, tbw - 4.7], rowH: [0.3, 0.55, 0.55, 0.55],
       fontSize: 11, color: T.colors.dk1, border: rowBorders("4A4A4A"), autoPage: false,
     });
   },

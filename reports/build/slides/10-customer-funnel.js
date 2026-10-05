@@ -16,7 +16,7 @@ const steps = [
   ["ID verified → Submitted", "76.0%", "80%", "−4 pts", "warn"],
   ["Submitted → Approved", "82.5%", "80–85%", "In range", "ok"],
   ["Approved → Funded", "92.8%", "90%", "In range", "ok"],
-  ["Start → Funded (end to end)", "30.9%", "45%", "−14 pts", "bad"],
+  ["Start → Funded, overall", "30.9%", "45%", "−14 pts", "bad"],
 ];
 
 const GAP = { ok: STATUS.goodText, warn: STATUS.warnText, bad: STATUS.badText };
@@ -48,8 +48,8 @@ module.exports = {
       dataLabelFormatCode: '#,##0.0"k"',
       valAxisMinVal: 0,
       valAxisMaxVal: 450,
-      valAxisMajorUnit: 100,
-      valAxisLabelFormatCode: '0"k"',
+      valAxisHidden: true,
+      valGridLine: { style: "none" },
     }));
     const tx = M + 6.9 + 0.35;
     const tw = W - M - tx;
@@ -63,8 +63,8 @@ module.exports = {
         cell(s[3], Object.assign({ align: "right", bold: true, color: GAP[s[4]] }, fill)),
       ];
     });
-    slide.addTable([headerRow(["Step", "Conversion", "Benchmark", "Gap"], { color: T.colors.dk2, aligns: ["left", "right", "right", "right"] }), ...body], {
-      x: tx, y: TOP, w: tw, colW: [2.1, 0.95, 1.0, tw - 4.05], rowH: [0.3, 0.37, 0.37, 0.37, 0.37, 0.37, 0.37],
+    slide.addTable([headerRow(["Step", "Rate", "Benchmark", "Gap"], { color: T.colors.dk2, aligns: ["left", "right", "right", "right"] }), ...body], {
+      x: tx, y: TOP, w: tw, colW: [1.95, 0.8, 1.2, tw - 3.95], rowH: [0.3, 0.37, 0.37, 0.37, 0.37, 0.37, 0.37],
       fontSize: 11, color: T.colors.dk1, border: rowBorders(), autoPage: false,
     });
     label(slide, "Where the leak is", { x: tx, y: TOP + 2.75, w: tw, h: 0.25, color: C.accent2 });

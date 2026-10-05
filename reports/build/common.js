@@ -1,8 +1,7 @@
 const path = require("path");
 const pptxgen = require("pptxgenjs");
 
-const SKILL_DIR = process.env.PPTX_SKILL_DIR || "/home/dalab2/.claude/skills/synced/1ad1e4b3-bf48-4580-8400-27bfdcb84c34_3d5be4fc-82e3-4996-b7e7-f0d315ee9119/pptx";
-const { applyTheme } = require(path.join(SKILL_DIR, "scripts", "apply_theme.js"));
+const { applyTheme } = require(path.join(__dirname, "apply_theme.js"));
 
 const W = 13.333;
 const H = 7.5;
