@@ -1,0 +1,41 @@
+{
+  "pairs": {
+    "accounts": {
+      "left": {
+        "source": "oracle",
+        "conn_macro": "pcds",
+        "service": "PCDSPRD",
+        "schema": "OWNER",
+        "table": "ACCT_CURR",
+        "where": "STATUS <> 'X'",
+        "date_col": "EFF_DT",
+        "date_type": "date"
+      },
+      "right": {
+        "source": "databricks",
+        "table": "main.curated.accounts",
+        "where": "src_sys = 'ACCOUNTS'",
+        "date_col": "dw_bus_dt",
+        "date_type": "date"
+      },
+      "fromDate": "2026-07-01",
+      "toDate": "2026-09-30",
+      "vintage": "month",
+      "key": "ACCT_ID",
+      "key_families": {
+        "ACCT_ID": "numeric"
+      },
+      "sample": 0.1,
+      "col_map": {
+        "ACCT_ID": "acct_id",
+        "BRANCH_CD": "branch_cd",
+        "BALANCE": "balance",
+        "OPEN_DT": "open_dt",
+        "PRODUCT": "product"
+      },
+      "col_type_overrides": {
+        "BRANCH_CD": "categorical"
+      }
+    }
+  }
+}

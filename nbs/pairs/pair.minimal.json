@@ -1,0 +1,29 @@
+{
+  "pairs": {
+    "orders": {
+      "left": {
+        "source": "oracle",
+        "conn_macro": "pcds",
+        "schema": "FINANCE",
+        "table": "ORDERS",
+        "date_col": "BUSINESS_DATE",
+        "date_type": "date"
+      },
+      "right": {
+        "source": "databricks",
+        "catalog": "main",
+        "schema": "finance",
+        "table": "orders",
+        "date_col": "business_date",
+        "date_type": "date"
+      },
+      "fromDate": "2026-09-01",
+      "toDate": "2026-09-30",
+      "col_map": {
+        "ORDER_ID": "order_id",
+        "AMOUNT": "amount",
+        "STATUS": "status"
+      }
+    }
+  }
+}
