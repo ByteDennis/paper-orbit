@@ -1,0 +1,518 @@
+DTrack CLI-Based Configuration Validation Guide
+================================================
+
+Purpose
+-------
+
+This guide validates one DTrack configuration from connectivity through Row Check,
+Column Check, report retrieval, key selection, key-family behavior, restart safety,
+and a controlled rollback. It covers both the production-style distributed flow and
+the simpler local fallback flow.
+
+The examples assume commands are run from the dtrack repository root and use `uv`.
+Replace every value in angle brackets. Never print credentials, `.env` contents,
+tokens, DSNs, or Authorization headers into logs.
+
+
+1. Understand the three independent configuration concerns
+------------------------------------------------------------
+
+Do not treat these fields as interchangeable:
+
+* `date_col` defines the daily partitions and therefore the common date window.
+* `key` identifies one logical record inside that window. A composite key is a
+  comma-separated list such as `ACCOUNT_ID,OPEN_DATE`.
+* `key_families` defines how each Left and Right key value is normalized before
+  deterministic hashing, fraction sampling, fixed-N key matching, and key alignment.
+* `col_map` maps Left column names to Right column names. Every key should normally
+  be present in `col_map`; if it is absent, DTrack assumes the same name on the Right.
+* `sample` controls row sampling independently of the date window and key definition.
+* `vintage` groups admitted daily partitions into Stage 2 windows. It does not control
+  scheduler frequency.
+
+Stage 1 fields are `left`, `right`, `fromDate`, `toDate`, and `date_synonyms`.
+Changing any of them requires a Row rollback or a new run. Stage 2 fields include
+`col_map`, `col_type_overrides`, `vintage`, `key`, `key_families`, `sample`, and
+`strict`; these can be tested with a Column rollback and manifest rebuild when Stage 1
+has not changed.
+
+
+2. Prepare an isolated candidate config
+---------------------------------------
+
+Copy the intended config to a reviewable candidate file. Do not edit the config used
+by a running job in place.
+
+    cp <current-config.json> /tmp/dtrack-candidate.json
+    python -m json.tool /tmp/dtrack-candidate.json >/dev/null
+
+A minimal pair shape is:
+
+    {
+      "pairs": {
+        "orders": {
+          "left": {
+            "source": "oracle",
+            "schema": "FINANCE",
+            "table": "ORDERS",
+            "date_col": "BUSINESS_DATE",
+            "date_type": "date"
+          },
+          "right": {
+            "source": "databricks",
+            "catalog": "analytics",
+            "schema": "finance",
+            "table": "orders",
+            "date_col": "business_date",
+            "date_type": "date"
+          },
+          "fromDate": "2026-01-01",
+          "toDate": "2026-01-31",
+          "vintage": "month",
+          "key": "order_id",
+          "key_families": {"order_id": "numeric"},
+          "sample": 0.1,
+          "col_map": {
+            "order_id": "order_id",
+            "amount": "amount"
+          }
+        }
+      }
+    }
+
+Configuration review checklist:
+
+* Both sides have the correct physical `date_col` and `date_type`.
+* `fromDate` and `toDate` are inclusive and deliberately narrow for the first test.
+* Left and Right source relations point to equivalent populations.
+* `col_map` is Left-name to Right-name, not the reverse.
+* Every key is stable, populated, and unique at the intended record grain.
+* Every `key_families` key is also named in `key`.
+* The chosen sample is large enough to expose known differences during validation.
+* `skip: true` is present only for intentionally excluded pairs.
+
+
+3. Choose the key before choosing a key family
+----------------------------------------------
+
+Choose the smallest stable business identifier that represents the same logical row
+on both systems.
+
+Good key properties:
+
+* Stable across reloads and independent of row ordering.
+* Non-null for the tested population.
+* Unique at the comparison grain, or intentionally composite when one field is not
+  unique.
+* Present on both sides, directly or through `col_map`.
+* Not a measure that can legitimately change, such as balance or status.
+* Not the partition date alone unless one row per date is truly the record grain.
+
+Use a composite key when needed:
+
+    "key": "ACCOUNT_ID,OPEN_DATE",
+    "col_map": {
+      "ACCOUNT_ID": "acct_id",
+      "OPEN_DATE": "open_dt",
+      "BALANCE": "balance"
+    }
+
+Before a full run, query both sources for the selected date window and check:
+
+* null count per key column;
+* total row count versus distinct composite-key count;
+* duplicate examples;
+* raw Left/Right examples that should identify the same row.
+
+If duplicates are legitimate, add the missing grain column to the composite key.
+Do not use normalization to hide a grain problem.
+
+
+4. Choose and test key families
+-------------------------------
+
+Built-in families:
+
+* `string`: trim and lowercase. Use for case-insensitive text identifiers.
+* `exact`: trim only. Use when letter case is meaningful.
+* `numeric`: trim, remove insignificant leading zeros, and collapse decimal notation;
+  for example `007`, `+7.00`, and `7` normalize compatibly.
+* `date`: normalize recognized date/datetime representations to a calendar date.
+* `digits`: keep digits only. Use carefully for identifiers whose punctuation is
+  formatting rather than meaning.
+
+Custom transforms may be a step list:
+
+    "key_families": {
+      "ORDER_NO": ["trim", "upper", "strip_prefix:ID-"]
+    }
+
+Side-specific transforms are available when the systems encode the same identifier
+differently:
+
+    "key_families": {
+      "ACCOUNT_ID": {
+        "family": "numeric",
+        "left_transform": ["trim", "strip_prefix:A"],
+        "right_transform": ["trim", "strip_leading_zeros", "collapse_decimal"]
+      }
+    }
+
+Prefer a built-in symmetric family. Use side-specific transforms only when examples
+prove that the representations differ systematically. A transform must not collapse
+two distinct business keys into one normalized key.
+
+Run the repository's family and parity tests first:
+
+    uv run pytest -q tests/unit/common/test_key_families.py
+    uv run pytest -q tests/unit/common/test_parity.py
+    uv run --group spark pytest -q --run-spark tests/local/spark/test_key_families_spark.py
+    uv run pytest -q tests/unit/dtrack_local/test_keycheck.py
+
+Probe representative values from the candidate config at the command line:
+
+    uv run python - <<'PY'
+    from dtrack_left.common.hashing import key_family
+
+    cases = [
+        ("numeric", "007", "7"),
+        ("date", "2026-01-31 00:00:00", "20260131"),
+        ("string", " AbC ", "abc"),
+        ("digits", "123-45", "12345"),
+    ]
+    for spec, left, right in cases:
+        family = key_family(spec)
+        a = family.normalize(left, "left")
+        b = family.normalize(right, "right")
+        print(spec, repr(left), "->", repr(a), repr(right), "->", repr(b), "match=", a == b)
+    PY
+
+Replace the sample cases with real, non-sensitive examples. Test at least:
+
+* normal matching values;
+* nulls and blanks;
+* leading/trailing whitespace;
+* leading zeros and decimal forms;
+* case differences;
+* date and datetime formats;
+* punctuation;
+* values that must remain distinct.
+
+There is currently no standalone public `dtrack key-check` command. The focused
+pytest tests, normalization probe, and an isolated end-to-end run are the supported
+CLI-level validation path. The local key-check implementation additionally detects
+Left-only keys, Right-only keys, likely family fixes, and Spark-SQL-versus-Python
+normalization mismatches; use its tests or notebook 05 when deeper diagnosis is needed.
+
+
+5. Static and connectivity validation
+-------------------------------------
+
+Install/synchronize the environment and inspect the actual command surface:
+
+    uv sync
+    uv run dtrack --version
+    uv run dtrack --help
+
+Run the Left preflight. It validates the config structure, connects to each active
+Left source, and describes the Right relation without connecting to Databricks:
+
+    uv run dtrack doctor --config /tmp/dtrack-candidate.json
+
+Success criteria:
+
+* process exit code is zero;
+* every active pair reports `ok: true`;
+* the described Right kind and target are correct;
+* no credential or endpoint value appears in captured output.
+
+For a true two-sided connectivity check, run the local preflight with a valid
+Databricks profile and SQL warehouse:
+
+    uv run python -m dtrack_local preflight \
+      --config /tmp/dtrack-candidate.json \
+      --profile <profile> \
+      --warehouse-id <warehouse-id> \
+      --pair <pair>
+
+Do not continue to a production-scale range until this returns zero and both `left`
+and `right` are healthy.
+
+
+6. Recommended first proof: isolated local end-to-end run
+---------------------------------------------------------
+
+Use a narrow date range, one pair, and a new run ID. This path performs preflight,
+Row Check, Column Check, and report generation on one machine:
+
+    RUN_ID="cfgcheck-$(date -u +%Y%m%dT%H%M%SZ)"
+    uv run python -m dtrack_local run \
+      --config /tmp/dtrack-candidate.json \
+      --run-id "$RUN_ID" \
+      --out /tmp/dtrack-validation/runs \
+      --profile <profile> \
+      --warehouse-id <warehouse-id> \
+      --pair <pair> \
+      --gate auto
+
+Optional safe publication/backup arguments are:
+
+    --report-s3 s3://<report-bucket>/<report-prefix>
+    --backup-s3 s3://<backup-bucket>/<backup-prefix>
+
+Do not use `--include-data` unless raw pulled rows are explicitly allowed in the
+backup location.
+
+Inspect the run folder:
+
+    find "/tmp/dtrack-validation/runs/$RUN_ID" -maxdepth 3 -type f -print | sort
+    python -m json.tool "/tmp/dtrack-validation/runs/$RUN_ID/_STATUS.json"
+
+Expected report artifacts include `summary.json`, `<pair>_compare_row.csv`,
+`<pair>_compare_col.csv`, `index.html`, and `report.xlsx`. Treat `PASS`, `FAIL`,
+`PARTIAL`, and `SKIPPED` as distinct states; a skipped Column Check is not a pass.
+
+
+7. Production-style distributed validation
+------------------------------------------
+
+Use a unique immutable run ID and exact run folder:
+
+    RUN_ID="cfgcheck-$(date -u +%Y%m%dT%H%M%SZ)"
+    WORK_ROOT="s3://<work-bucket>/<prefix>/runs"
+    RUN_S3="$WORK_ROOT/$RUN_ID"
+    REPORT_S3="s3://<report-bucket>/<report-prefix>"
+
+7.1 Start the Right-side Databricks job
+
+Start the deployed DTrack Right notebook/job with the runs root, this `RUN_ID`, report
+location, gate policy, and normal timeouts. The Right job should be running before or
+soon after Row Check and will wait for `row_check/*.left.json`.
+
+For the repository's local CSV stand-in only, the equivalent command is:
+
+    uv run python -m dtrack_right \
+      --work "$WORK_ROOT" \
+      --run-id "$RUN_ID" \
+      --report "$REPORT_S3" \
+      --right-csv-dir <right-csv-directory> \
+      --out /tmp/dtrack-right-report \
+      --gate auto
+
+The CSV stand-in is not proof of live Databricks behavior. In production, use the
+deployed Databricks job/notebook and retain its run ID and logs.
+
+7.2 Run Left Row Check
+
+    uv run dtrack row-check \
+      --config /tmp/dtrack-candidate.json \
+      --s3 "$RUN_S3" \
+      --run-id "$RUN_ID" \
+      --pair <pair> \
+      --workers 1
+
+Expected Stage 1 evidence:
+
+* `row_check/<pair>.left.json`: Left daily counts and credential-free pair config;
+* `row_check/_LEFT_CLOSED`: Left counting barrier;
+* `row_check/<pair>.json`: Right reconciliation and partition verdicts;
+* `reports/<pair>_compare_row.csv`: per-partition Row Check findings;
+* `row_check/_CLOSED`: the Right-side release barrier;
+* `manifest/<pair>.json`: Stage 2 plan, only when the gate passes.
+
+Review the row report before Column Check. Confirm that `match`, `left_only`,
+`right_only`, and `count_diff` findings agree with known source examples. Only
+partitions with verdict `match` enter Stage 2 windows; holes are intentionally
+preserved.
+
+7.3 Inspect the manifest contract
+
+Check at least:
+
+* `run_id` and `pair`;
+* `key_cols` and `right_key_cols`;
+* resolved `key_families`;
+* `sample` mode and parameters;
+* `windows[].partitions`;
+* `columns` and `col_map`;
+* `expected_units == number_of_windows * number_of_columns`.
+
+For fixed-N sampling, `col-check` will publish `manifest/<pair>.keys.json`; the Left
+selects the key tuples once and both sides use the same tuples. For fraction sampling,
+both sides use deterministic hashing of the normalized composite key.
+
+7.4 Run Left Column Check
+
+    uv run dtrack col-check \
+      --s3 "$RUN_S3" \
+      --pair <pair> \
+      --work-dir "/tmp/dtrack-col/$RUN_ID" \
+      --pull-workers 1 \
+      --stat-workers 1 \
+      --wait-timeout 1800 \
+      --poll-interval 3
+
+Expected Stage 2 evidence:
+
+* `manifest/_CLOSED` after all expected Left units are published;
+* one committed `units/` payload and `_INDEX/` pointer per expected unit;
+* Right-side `results/` records as units are consumed;
+* `dead/` only for units that exhausted retry handling;
+* final `_STATUS.json` with `state: complete`;
+* report artifacts published under `history/<run_id>/` before
+  `latest/pointer.json` is updated.
+
+Re-run the same `col-check` command once. A healthy completed run should report
+`published_units: 0`, proving restart/idempotency behavior.
+
+7.5 Fetch and review the report
+
+    uv run dtrack fetch-report \
+      --report-s3 "$REPORT_S3" \
+      --run-id "$RUN_ID" \
+      --out "/tmp/dtrack-report/$RUN_ID"
+
+Validate:
+
+* `summary.json` references the intended run and pair;
+* the Row CSV explains excluded partitions;
+* the Column CSV contains all expected mapped value columns and windows;
+* `index.html` renders and agrees with the CSVs;
+* `report.xlsx` contains the expected pair sheets/data;
+* a failed Row Check that prevents Column Check is shown as `SKIPPED`, not blank or
+  `PASS`;
+* the report store retains immutable history and `latest/pointer.json` points to the
+  intended completed run.
+
+
+8. Gate testing
+---------------
+
+Test gate behavior on separate run IDs; never reuse the successful validation run.
+
+* `auto`: releases a pair when at least one partition matches.
+* `manual`: writes Row Check verdicts but intentionally releases no manifest.
+* `ratio:<x>`: releases only when the excluded partition share is within the chosen
+  threshold.
+
+For each policy, prove both an allowed and blocked case. A Right job may reach idle
+timeout in a deliberately blocked/manual test because no Column Check work is
+released; record that as expected behavior, not a Column Check failure.
+
+
+9. Rollback decision and safe procedure
+---------------------------------------
+
+Prefer a new run ID for production evidence, broad config changes, or any case where
+the original report must remain immutable. Use rollback only for a controlled retry
+of one pair in an isolated run.
+
+Rollback stages:
+
+* `dead`: remove this pair's dead units so the Right job retries them.
+* `col`: remove this pair's Stage 2 units/results/barriers and rerun Column Check.
+  Add `--config` to rebuild the manifest after Stage 2-only changes.
+* `row`: remove this pair's Stage 1 and Stage 2 evidence and rerun Row Check followed
+  by Column Check.
+
+Safety sequence:
+
+1. Stop or pause the Right job for the exact run. This prevents concurrent recreation
+   while rollback deletes signals.
+2. Preserve the current logs and fetched report. For material data, copy the exact run
+   prefix to an approved backup location before deletion.
+3. Confirm the exact run URI and pair. Never point rollback at a runs root.
+4. Run rollback without `--yes` and save the JSON deletion plan.
+5. Review every planned key. Confirm it belongs to the intended pair and stage.
+6. Apply the exact same command with `--yes`.
+7. Execute the returned `next` steps in order.
+8. Re-fetch and revalidate the report. Retain before/after evidence.
+
+Dry-run examples:
+
+    uv run dtrack rollback --run "$RUN_S3" --pair <pair> --stage dead
+
+    uv run dtrack rollback --run "$RUN_S3" --pair <pair> --stage col
+
+    uv run dtrack rollback \
+      --run "$RUN_S3" \
+      --pair <pair> \
+      --stage col \
+      --config /tmp/dtrack-candidate.json
+
+    uv run dtrack rollback --run "$RUN_S3" --pair <pair> --stage row
+
+Only after review, append `--yes` to the selected command.
+
+Important constraints:
+
+* `--config` is accepted only with `--stage col`.
+* A Column rollback with `--config` refuses changes to Stage 1 fields. If those fields
+  changed, use `--stage row` and rerun with the candidate config, or use a new run.
+* Do not manually edit `_STATUS.json`, `_CLOSED` markers, manifests, index pointers,
+  units, or report history.
+* Rollback mutates the selected run and is not a substitute for immutable production
+  history. When in doubt, use a new run ID.
+
+After `dead`, restart the Right job with the same run ID. After `col`, restart the
+Right job and rerun `dtrack col-check --s3 "$RUN_S3" --pair <pair>`. After `row`, rerun
+`dtrack row-check` for the pair, restart the Right job, and then rerun `col-check`.
+
+
+10. Repository regression and end-to-end evidence
+-------------------------------------------------
+
+Before accepting a config or key-family change, run the smallest relevant checks and
+then broaden:
+
+    just test unit
+    just test spark
+    just test e2e
+
+The deterministic local E2E proof can also be run directly:
+
+    just e2e
+
+It exercises two processes, Row Check, gates, manifests, fraction/fixed sampling,
+Column Check, report generation, report fetching, and idempotent reruns against Moto
+S3. It does not prove real Oracle, real S3, or live Databricks connectivity.
+
+For provisioned live infrastructure, follow `tests/live/README.md` and run the intended
+target explicitly:
+
+    just live sync
+    just live setup
+    just live test
+
+Live setup/teardown changes external infrastructure. Confirm the approved environment
+and exact resources before those commands. Keep synthetic Docker/CSV evidence separate
+from real-source evidence in the final sign-off.
+
+
+11. Final acceptance checklist
+------------------------------
+
+Accept the candidate only when all applicable statements are supported by fresh
+evidence:
+
+* JSON parses and `dtrack doctor` succeeds.
+* Two-sided preflight succeeds for the selected pair.
+* Key columns match the business grain and have understood null/duplicate behavior.
+* Key-family examples match across sides without collisions between distinct keys.
+* Python normalization and Spark SQL normalization parity tests pass.
+* Row Check findings and gate behavior match known source cases.
+* The manifest contains the intended keys, families, sample, windows, columns, and
+  expected unit count.
+* Column Check finishes with no unexplained dead units.
+* A repeated Column Check publishes zero new units.
+* CSV, HTML, Excel, summary, and latest-pointer report views agree.
+* Any rollback was dry-run reviewed, scoped to one exact run/pair, executed with the
+  Right job stopped, and followed by complete revalidation.
+* Logs contain no secrets.
+* Synthetic, local, and live evidence are labeled separately.
+
+Record the config hash, run ID, exact CLI commands, exit codes, timestamps, Right job
+run ID, report location, test summaries, known findings, and rollback status in the
+validation handoff. A config is not validated merely because the CLI started; it is
+validated only when the complete artifact chain and the expected business outcomes
+agree.

@@ -1,0 +1,2210 @@
+{
+  "datasets": [
+    {
+      "name": "ds_current",
+      "displayName": "pair_current_status",
+      "queryLines": [
+        "WITH ranked AS (\n",
+        "  SELECT *,\n",
+        "    row_number() OVER (PARTITION BY pair_name ORDER BY query_date DESC NULLS LAST, created_at DESC, check_id DESC) AS check_rank,\n",
+        "    row_number() OVER (PARTITION BY pair_name ORDER BY config_version DESC, created_at DESC, check_id DESC) AS config_rank\n",
+        "  FROM CATALOG.SCHEMA.table_list\n",
+        "),\n",
+        "latest AS (\n",
+        "  SELECT r.* EXCEPT (review_status), v.review_status,\n",
+        "    CAST(timestampdiff(MINUTE, r.created_at, current_timestamp()) AS BIGINT) AS age_minutes\n",
+        "  FROM ranked r\n",
+        "  JOIN (SELECT pair_name, review_status FROM ranked WHERE config_rank = 1) v ON r.pair_name = v.pair_name\n",
+        "  WHERE r.check_rank = 1\n",
+        ")\n",
+        "SELECT\n",
+        "  pair_name,\n",
+        "  count_state,\n",
+        "  CASE count_state\n",
+        "    WHEN 'ERROR' THEN '🔴 Error'\n",
+        "    WHEN 'FAIL' THEN '🔴 Mismatch'\n",
+        "    WHEN 'WAITING_RIGHT' THEN '🟡 Right not loaded'\n",
+        "    WHEN 'PENDING_RIGHT' THEN '🔵 Awaiting Right'\n",
+        "    WHEN 'NOT_RUN' THEN '⚪ Not run'\n",
+        "    WHEN 'SUCCESS' THEN '🟢 Matched'\n",
+        "    ELSE count_state\n",
+        "  END AS status,\n",
+        "  CAST(CASE count_state\n",
+        "    WHEN 'ERROR' THEN '0'\n",
+        "    WHEN 'FAIL' THEN '1'\n",
+        "    WHEN 'WAITING_RIGHT' THEN '2'\n",
+        "    WHEN 'PENDING_RIGHT' THEN '3'\n",
+        "    WHEN 'NOT_RUN' THEN '4'\n",
+        "    WHEN 'SUCCESS' THEN '5'\n",
+        "    ELSE 6\n",
+        "  END AS INT) AS severity,\n",
+        "  review_status,\n",
+        "  CASE review_status\n",
+        "    WHEN 'CHECKED_FAILED' THEN 'Reviewed · failed'\n",
+        "    WHEN 'NOT_CHECKED' THEN 'Not reviewed'\n",
+        "    WHEN 'CHECKED_SUCCEEDED' THEN 'Reviewed · OK'\n",
+        "    ELSE review_status\n",
+        "  END AS review,\n",
+        "  query_date,\n",
+        "  left_count,\n",
+        "  right_count,\n",
+        "  right_count - left_count AS count_diff,\n",
+        "  error_message,\n",
+        "  created_at,\n",
+        "  age_minutes,\n",
+        "  CASE\n",
+        "    WHEN age_minutes < 60 THEN concat(age_minutes, 'm')\n",
+        "    WHEN age_minutes < 1440 THEN concat(floor(age_minutes / 60), 'h ', age_minutes % 60, 'm')\n",
+        "    ELSE concat(floor(age_minutes / 1440), 'd ', floor((age_minutes % 1440) / 60), 'h')\n",
+        "  END AS age,\n",
+        "  CASE WHEN count_state <> 'SUCCESS' THEN round(age_minutes / 1440.0, 1) END AS open_age_days,\n",
+        "  CAST(count_state = 'SUCCESS' AS INT) AS is_success,\n",
+        "  CAST(count_state IN ('FAIL', 'ERROR') AS INT) AS is_failed,\n",
+        "  CAST(count_state IN ('PENDING_RIGHT', 'WAITING_RIGHT') AS INT) AS is_waiting\n",
+        "FROM latest"
+      ]
+    },
+    {
+      "name": "ds_history",
+      "displayName": "pair_check_history",
+      "queryLines": [
+        "WITH base AS (\n",
+        "  SELECT *,\n",
+        "    CAST(timestampdiff(MINUTE, created_at, current_timestamp()) AS BIGINT) AS age_minutes,\n",
+        "    row_number() OVER (PARTITION BY pair_name, query_date ORDER BY created_at DESC, check_id DESC) AS day_rank\n",
+        "  FROM CATALOG.SCHEMA.table_list\n",
+        "  WHERE query_date IS NOT NULL\n",
+        ")\n",
+        "SELECT\n",
+        "  query_date,\n",
+        "  pair_name,\n",
+        "  count_state,\n",
+        "  CASE count_state\n",
+        "    WHEN 'ERROR' THEN '🔴 Error'\n",
+        "    WHEN 'FAIL' THEN '🔴 Mismatch'\n",
+        "    WHEN 'WAITING_RIGHT' THEN '🟡 Right not loaded'\n",
+        "    WHEN 'PENDING_RIGHT' THEN '🔵 Awaiting Right'\n",
+        "    WHEN 'NOT_RUN' THEN '⚪ Not run'\n",
+        "    WHEN 'SUCCESS' THEN '🟢 Matched'\n",
+        "    ELSE count_state\n",
+        "  END AS status,\n",
+        "  concat(CASE count_state\n",
+        "    WHEN 'ERROR' THEN '🔴'\n",
+        "    WHEN 'FAIL' THEN '🔴'\n",
+        "    WHEN 'WAITING_RIGHT' THEN '🟡'\n",
+        "    WHEN 'PENDING_RIGHT' THEN '🔵'\n",
+        "    WHEN 'NOT_RUN' THEN '⚪'\n",
+        "    WHEN 'SUCCESS' THEN '🟢'\n",
+        "    ELSE '❔'\n",
+        "  END, ' ', CASE\n",
+        "    WHEN count_state = 'SUCCESS' THEN CASE WHEN left_count IS NULL THEN '–' WHEN abs(left_count) >= 1000000000 THEN concat(round(left_count / 1e9, 1), 'B') WHEN abs(left_count) >= 1000000 THEN concat(round(left_count / 1e6, 1), 'M') WHEN abs(left_count) >= 1000 THEN concat(round(left_count / 1e3, 1), 'K') ELSE CAST(left_count AS STRING) END\n",
+        "    WHEN count_state = 'ERROR' THEN 'error'\n",
+        "    ELSE concat(CASE WHEN left_count IS NULL THEN '–' WHEN abs(left_count) >= 1000000000 THEN concat(round(left_count / 1e9, 1), 'B') WHEN abs(left_count) >= 1000000 THEN concat(round(left_count / 1e6, 1), 'M') WHEN abs(left_count) >= 1000 THEN concat(round(left_count / 1e3, 1), 'K') ELSE CAST(left_count AS STRING) END, ' → ', CASE WHEN right_count IS NULL THEN '–' WHEN abs(right_count) >= 1000000000 THEN concat(round(right_count / 1e9, 1), 'B') WHEN abs(right_count) >= 1000000 THEN concat(round(right_count / 1e6, 1), 'M') WHEN abs(right_count) >= 1000 THEN concat(round(right_count / 1e3, 1), 'K') ELSE CAST(right_count AS STRING) END)\n",
+        "  END) AS grid_cell,\n",
+        "  day_rank,\n",
+        "  review_status,\n",
+        "  left_count,\n",
+        "  right_count,\n",
+        "  right_count - left_count AS count_diff,\n",
+        "  left_partition,\n",
+        "  right_partition,\n",
+        "  error_message,\n",
+        "  coalesce(error_message, '(none)') AS error_text,\n",
+        "  CASE\n",
+        "    WHEN age_minutes < 60 THEN concat(age_minutes, 'm')\n",
+        "    WHEN age_minutes < 1440 THEN concat(floor(age_minutes / 60), 'h ', age_minutes % 60, 'm')\n",
+        "    ELSE concat(floor(age_minutes / 1440), 'd ', floor((age_minutes % 1440) / 60), 'h')\n",
+        "  END AS age,\n",
+        "  left_checked_at,\n",
+        "  right_checked_at,\n",
+        "  aws_name,\n",
+        "  config_version,\n",
+        "  offset_days,\n",
+        "  timezone,\n",
+        "  concat_ws(' · ', get_json_object(left_conn_detail, '$.source'), get_json_object(left_conn_detail, '$.conn_name'), get_json_object(left_conn_detail, '$.server_name'), concat_ws('.', get_json_object(left_conn_detail, '$.catalog'), get_json_object(left_conn_detail, '$.schema'), get_json_object(left_conn_detail, '$.table'))) AS left_target,\n",
+        "  concat_ws(' · ', get_json_object(right_conn_detail, '$.source'), get_json_object(right_conn_detail, '$.conn_name'), get_json_object(right_conn_detail, '$.server_name'), concat_ws('.', get_json_object(right_conn_detail, '$.catalog'), get_json_object(right_conn_detail, '$.schema'), get_json_object(right_conn_detail, '$.table'))) AS right_target,\n",
+        "  left_query_variable,\n",
+        "  right_query_variable,\n",
+        "  left_conn_detail,\n",
+        "  right_conn_detail,\n",
+        "  created_at,\n",
+        "  updated_at,\n",
+        "  check_id\n",
+        "FROM base"
+      ]
+    },
+    {
+      "name": "ds_config",
+      "displayName": "pair_config_snapshots",
+      "queryLines": [
+        "SELECT\n",
+        "  pair_name,\n",
+        "  config_version,\n",
+        "  review_status,\n",
+        "  aws_name,\n",
+        "  offset_days,\n",
+        "  timezone,\n",
+        "  concat_ws(' · ', get_json_object(left_conn_detail, '$.source'), get_json_object(left_conn_detail, '$.conn_name'), get_json_object(left_conn_detail, '$.server_name'), concat_ws('.', get_json_object(left_conn_detail, '$.catalog'), get_json_object(left_conn_detail, '$.schema'), get_json_object(left_conn_detail, '$.table'))) AS left_target,\n",
+        "  concat_ws(' · ', get_json_object(right_conn_detail, '$.source'), get_json_object(right_conn_detail, '$.conn_name'), get_json_object(right_conn_detail, '$.server_name'), concat_ws('.', get_json_object(right_conn_detail, '$.catalog'), get_json_object(right_conn_detail, '$.schema'), get_json_object(right_conn_detail, '$.table'))) AS right_target,\n",
+        "  left_query_variable,\n",
+        "  right_query_variable,\n",
+        "  left_conn_detail,\n",
+        "  right_conn_detail,\n",
+        "  created_at,\n",
+        "  check_id\n",
+        "FROM CATALOG.SCHEMA.table_list\n",
+        "WHERE query_date IS NULL"
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "executive",
+      "displayName": "Executive overview",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1",
+      "layout": [
+        {
+          "widget": {
+            "name": "exec_note",
+            "multilineTextboxSpec": {
+              "lines": [
+                "**Pair status** = latest check per pair, most urgent first · **Age** = time since `created_at` · **Status history** = one cell per pair per query date (🟢 matched count, 🔴/🟡 Left → Right)\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 9,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "exec_history_range",
+            "queries": [
+              {
+                "name": "filter_exec_history_range_ds_history",
+                "query": {
+                  "datasetName": "ds_history",
+                  "fields": [
+                    {
+                      "name": "query_date",
+                      "expression": "`query_date`"
+                    },
+                    {
+                      "name": "query_date_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-date-range-picker",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "query_date",
+                    "displayName": "query_date",
+                    "queryName": "filter_exec_history_range_ds_history"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "History range"
+              },
+              "selection": {
+                "defaultSelection": {
+                  "range": {
+                    "dataType": "DATE",
+                    "min": {
+                      "value": "now-14d/d"
+                    },
+                    "max": {
+                      "value": "now/d"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 9,
+            "y": 0,
+            "width": 3,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_failed",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_current",
+                  "fields": [
+                    {
+                      "name": "sum(is_failed)",
+                      "expression": "SUM(`is_failed`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(is_failed)",
+                  "displayName": "🔴 Needs attention"
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "🔴 Needs attention",
+                "showDescription": true,
+                "description": "Mismatch or error"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 1,
+            "width": 3,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_waiting",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_current",
+                  "fields": [
+                    {
+                      "name": "sum(is_waiting)",
+                      "expression": "SUM(`is_waiting`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(is_waiting)",
+                  "displayName": "🟡 Waiting"
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "🟡 Waiting",
+                "showDescription": true,
+                "description": "Right side not ready"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 1,
+            "width": 3,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_success",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_current",
+                  "fields": [
+                    {
+                      "name": "sum(is_success)",
+                      "expression": "SUM(`is_success`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(is_success)",
+                  "displayName": "🟢 Matched"
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "🟢 Matched",
+                "showDescription": true,
+                "description": "Left = Right"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 1,
+            "width": 3,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_oldest",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_current",
+                  "fields": [
+                    {
+                      "name": "max(open_age_days)",
+                      "expression": "MAX(`open_age_days`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "max(open_age_days)",
+                  "displayName": "Oldest open issue (days)"
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Oldest open issue (days)",
+                "showDescription": true,
+                "description": "Age of the oldest pair not matched"
+              }
+            }
+          },
+          "position": {
+            "x": 9,
+            "y": 1,
+            "width": 3,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "exec_status",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_current",
+                  "fields": [
+                    {
+                      "name": "status",
+                      "expression": "`status`"
+                    },
+                    {
+                      "name": "pair_name",
+                      "expression": "`pair_name`"
+                    },
+                    {
+                      "name": "query_date",
+                      "expression": "`query_date`"
+                    },
+                    {
+                      "name": "left_count",
+                      "expression": "`left_count`"
+                    },
+                    {
+                      "name": "right_count",
+                      "expression": "`right_count`"
+                    },
+                    {
+                      "name": "count_diff",
+                      "expression": "`count_diff`"
+                    },
+                    {
+                      "name": "age",
+                      "expression": "`age`"
+                    },
+                    {
+                      "name": "review",
+                      "expression": "`review`"
+                    },
+                    {
+                      "name": "error_message",
+                      "expression": "`error_message`"
+                    },
+                    {
+                      "name": "count_state",
+                      "expression": "`count_state`"
+                    },
+                    {
+                      "name": "review_status",
+                      "expression": "`review_status`"
+                    }
+                  ],
+                  "disaggregated": true,
+                  "orders": [
+                    {
+                      "direction": "ASC",
+                      "expression": "`severity`"
+                    },
+                    {
+                      "direction": "DESC",
+                      "expression": "`age_minutes`"
+                    },
+                    {
+                      "direction": "ASC",
+                      "expression": "`pair_name`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "rowsPerPage": 25,
+              "displayRowNumbers": false,
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "status",
+                    "displayName": "Status",
+                    "useForSearch": true,
+                    "style": {
+                      "type": "basic",
+                      "rules": [
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "ERROR"
+                            },
+                            "operator": "=",
+                            "fieldName": "count_state"
+                          },
+                          "backgroundColor": "#FDE2E1",
+                          "foregroundColor": "#A4161A"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "FAIL"
+                            },
+                            "operator": "=",
+                            "fieldName": "count_state"
+                          },
+                          "backgroundColor": "#FDE2E1",
+                          "foregroundColor": "#A4161A"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "WAITING_RIGHT"
+                            },
+                            "operator": "=",
+                            "fieldName": "count_state"
+                          },
+                          "backgroundColor": "#FFF3CD",
+                          "foregroundColor": "#7A5B00"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "PENDING_RIGHT"
+                            },
+                            "operator": "=",
+                            "fieldName": "count_state"
+                          },
+                          "backgroundColor": "#DCEEF6",
+                          "foregroundColor": "#075A73"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "NOT_RUN"
+                            },
+                            "operator": "=",
+                            "fieldName": "count_state"
+                          },
+                          "backgroundColor": "#ECEEF0",
+                          "foregroundColor": "#4A5560"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "SUCCESS"
+                            },
+                            "operator": "=",
+                            "fieldName": "count_state"
+                          },
+                          "backgroundColor": "#D4EDDA",
+                          "foregroundColor": "#155724"
+                        }
+                      ]
+                    },
+                    "columnWidth": 170
+                  },
+                  {
+                    "fieldName": "pair_name",
+                    "displayName": "Pair",
+                    "useForSearch": true,
+                    "columnWidth": 160
+                  },
+                  {
+                    "fieldName": "query_date",
+                    "displayName": "Query date",
+                    "useForSearch": false,
+                    "format": {
+                      "type": "moment.js",
+                      "format": "YYYY-MM-DD"
+                    }
+                  },
+                  {
+                    "fieldName": "left_count",
+                    "displayName": "Left count",
+                    "useForSearch": false,
+                    "format": {
+                      "type": "number-plain",
+                      "abbreviation": "none",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 0
+                      }
+                    },
+                    "contentAlignment": "right"
+                  },
+                  {
+                    "fieldName": "right_count",
+                    "displayName": "Right count",
+                    "useForSearch": false,
+                    "format": {
+                      "type": "number-plain",
+                      "abbreviation": "none",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 0
+                      }
+                    },
+                    "contentAlignment": "right"
+                  },
+                  {
+                    "fieldName": "count_diff",
+                    "displayName": "Right − Left",
+                    "useForSearch": false,
+                    "format": {
+                      "type": "number-plain",
+                      "abbreviation": "none",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 0
+                      }
+                    },
+                    "contentAlignment": "right",
+                    "style": {
+                      "type": "basic",
+                      "rules": [
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "0"
+                            },
+                            "operator": ">",
+                            "fieldName": "count_diff"
+                          },
+                          "foregroundColor": "#A4161A"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "0"
+                            },
+                            "operator": "<",
+                            "fieldName": "count_diff"
+                          },
+                          "foregroundColor": "#A4161A"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "fieldName": "age",
+                    "displayName": "Age",
+                    "useForSearch": true,
+                    "columnWidth": 90
+                  },
+                  {
+                    "fieldName": "review",
+                    "displayName": "Review",
+                    "useForSearch": true,
+                    "style": {
+                      "type": "basic",
+                      "rules": [
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "CHECKED_FAILED"
+                            },
+                            "operator": "=",
+                            "fieldName": "review_status"
+                          },
+                          "backgroundColor": "#FDE2E1",
+                          "foregroundColor": "#A4161A"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "NOT_CHECKED"
+                            },
+                            "operator": "=",
+                            "fieldName": "review_status"
+                          },
+                          "backgroundColor": "#ECEEF0",
+                          "foregroundColor": "#4A5560"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "CHECKED_SUCCEEDED"
+                            },
+                            "operator": "=",
+                            "fieldName": "review_status"
+                          },
+                          "backgroundColor": "#D4EDDA",
+                          "foregroundColor": "#155724"
+                        }
+                      ]
+                    },
+                    "columnWidth": 150
+                  },
+                  {
+                    "fieldName": "error_message",
+                    "displayName": "Error (hover for full text)",
+                    "useForSearch": false,
+                    "actions": {
+                      "hover": {
+                        "type": "tooltip",
+                        "tooltipTemplate": "{{ @ }}"
+                      }
+                    },
+                    "columnWidth": 420
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Pair status",
+                "showDescription": false,
+                "description": ""
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 3,
+            "width": 12,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "exec_history",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_history",
+                  "fields": [
+                    {
+                      "name": "pair_name",
+                      "expression": "`pair_name`"
+                    },
+                    {
+                      "name": "query_date",
+                      "expression": "`query_date`"
+                    },
+                    {
+                      "name": "max(grid_cell)",
+                      "expression": "MAX(`grid_cell`)"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`day_rank` = 1"
+                    }
+                  ],
+                  "disaggregated": false,
+                  "orders": [
+                    {
+                      "direction": "ASC",
+                      "expression": "`pair_name`"
+                    },
+                    {
+                      "direction": "DESC",
+                      "expression": "`query_date`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "pivot",
+              "encodings": {
+                "rows": [
+                  {
+                    "fieldName": "pair_name",
+                    "displayName": "Pair"
+                  }
+                ],
+                "columns": [
+                  {
+                    "fieldName": "query_date",
+                    "displayName": "Query date"
+                  }
+                ],
+                "cell": {
+                  "type": "multi-cell",
+                  "fields": [
+                    {
+                      "fieldName": "max(grid_cell)",
+                      "cellType": "text",
+                      "displayName": "Status · Left → Right"
+                    }
+                  ]
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Status history",
+                "showDescription": true,
+                "description": "Latest check per pair and query date; range set by History range above"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 10,
+            "width": 12,
+            "height": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "analyst",
+      "displayName": "Analyst details",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1",
+      "layout": [
+        {
+          "widget": {
+            "name": "f_query_date",
+            "queries": [
+              {
+                "name": "filter_f_query_date_ds_history",
+                "query": {
+                  "datasetName": "ds_history",
+                  "fields": [
+                    {
+                      "name": "query_date",
+                      "expression": "`query_date`"
+                    },
+                    {
+                      "name": "query_date_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-date-range-picker",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "query_date",
+                    "displayName": "query_date",
+                    "queryName": "filter_f_query_date_ds_history"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Query date"
+              },
+              "selection": {
+                "defaultSelection": {
+                  "range": {
+                    "dataType": "DATE",
+                    "min": {
+                      "value": "now-7d/d"
+                    },
+                    "max": {
+                      "value": "now/d"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 4,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "f_pair",
+            "queries": [
+              {
+                "name": "filter_f_pair_ds_history",
+                "query": {
+                  "datasetName": "ds_history",
+                  "fields": [
+                    {
+                      "name": "pair_name",
+                      "expression": "`pair_name`"
+                    },
+                    {
+                      "name": "pair_name_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "filter_f_pair_ds_config",
+                "query": {
+                  "datasetName": "ds_config",
+                  "fields": [
+                    {
+                      "name": "pair_name",
+                      "expression": "`pair_name`"
+                    },
+                    {
+                      "name": "pair_name_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "pair_name",
+                    "displayName": "pair_name",
+                    "queryName": "filter_f_pair_ds_history"
+                  },
+                  {
+                    "fieldName": "pair_name",
+                    "displayName": "pair_name",
+                    "queryName": "filter_f_pair_ds_config"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Pair"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 0,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "f_state",
+            "queries": [
+              {
+                "name": "filter_f_state_ds_history",
+                "query": {
+                  "datasetName": "ds_history",
+                  "fields": [
+                    {
+                      "name": "count_state",
+                      "expression": "`count_state`"
+                    },
+                    {
+                      "name": "count_state_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "count_state",
+                    "displayName": "count_state",
+                    "queryName": "filter_f_state_ds_history"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Status"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 0,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "f_review",
+            "queries": [
+              {
+                "name": "filter_f_review_ds_history",
+                "query": {
+                  "datasetName": "ds_history",
+                  "fields": [
+                    {
+                      "name": "review_status",
+                      "expression": "`review_status`"
+                    },
+                    {
+                      "name": "review_status_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "filter_f_review_ds_config",
+                "query": {
+                  "datasetName": "ds_config",
+                  "fields": [
+                    {
+                      "name": "review_status",
+                      "expression": "`review_status`"
+                    },
+                    {
+                      "name": "review_status_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "review_status",
+                    "displayName": "review_status",
+                    "queryName": "filter_f_review_ds_history"
+                  },
+                  {
+                    "fieldName": "review_status",
+                    "displayName": "review_status",
+                    "queryName": "filter_f_review_ds_config"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Review"
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 0,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "f_aws",
+            "queries": [
+              {
+                "name": "filter_f_aws_ds_history",
+                "query": {
+                  "datasetName": "ds_history",
+                  "fields": [
+                    {
+                      "name": "aws_name",
+                      "expression": "`aws_name`"
+                    },
+                    {
+                      "name": "aws_name_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "filter_f_aws_ds_config",
+                "query": {
+                  "datasetName": "ds_config",
+                  "fields": [
+                    {
+                      "name": "aws_name",
+                      "expression": "`aws_name`"
+                    },
+                    {
+                      "name": "aws_name_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "aws_name",
+                    "displayName": "aws_name",
+                    "queryName": "filter_f_aws_ds_history"
+                  },
+                  {
+                    "fieldName": "aws_name",
+                    "displayName": "aws_name",
+                    "queryName": "filter_f_aws_ds_config"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "AWS name"
+              }
+            }
+          },
+          "position": {
+            "x": 10,
+            "y": 0,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "an_daily",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_history",
+                  "fields": [
+                    {
+                      "name": "query_date",
+                      "expression": "`query_date`"
+                    },
+                    {
+                      "name": "count_state",
+                      "expression": "`count_state`"
+                    },
+                    {
+                      "name": "count(pair_name)",
+                      "expression": "COUNT(`pair_name`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "query_date",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "Query date"
+                },
+                "y": {
+                  "fieldName": "count(pair_name)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Checks"
+                },
+                "color": {
+                  "fieldName": "count_state",
+                  "displayName": "Status",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "ERROR",
+                        "color": "#E5484D"
+                      },
+                      {
+                        "value": "FAIL",
+                        "color": "#E5484D"
+                      },
+                      {
+                        "value": "WAITING_RIGHT",
+                        "color": "#FFB224"
+                      },
+                      {
+                        "value": "PENDING_RIGHT",
+                        "color": "#0B7FA8"
+                      },
+                      {
+                        "value": "NOT_RUN",
+                        "color": "#9BA1A6"
+                      },
+                      {
+                        "value": "SUCCESS",
+                        "color": "#30A46C"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Checks per day by status",
+                "showDescription": false,
+                "description": ""
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 1,
+            "width": 6,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "an_errors",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_history",
+                  "fields": [
+                    {
+                      "name": "count_state",
+                      "expression": "`count_state`"
+                    },
+                    {
+                      "name": "pair_name",
+                      "expression": "`pair_name`"
+                    },
+                    {
+                      "name": "error_text",
+                      "expression": "`error_text`"
+                    },
+                    {
+                      "name": "count(pair_name)",
+                      "expression": "COUNT(`pair_name`)"
+                    },
+                    {
+                      "name": "max(query_date)",
+                      "expression": "MAX(`query_date`)"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`error_message` IS NOT NULL"
+                    }
+                  ],
+                  "cubeGroupingSets": {
+                    "sets": [
+                      {
+                        "fieldNames": [
+                          "count_state",
+                          "pair_name",
+                          "error_text"
+                        ]
+                      },
+                      {
+                        "fieldNames": [
+                          "count_state",
+                          "pair_name"
+                        ]
+                      },
+                      {
+                        "fieldNames": [
+                          "count_state"
+                        ]
+                      },
+                      {}
+                    ]
+                  },
+                  "disaggregated": false,
+                  "orders": [
+                    {
+                      "direction": "ASC",
+                      "expression": "`count_state`"
+                    },
+                    {
+                      "direction": "ASC",
+                      "expression": "`pair_name`"
+                    },
+                    {
+                      "direction": "ASC",
+                      "expression": "`error_text`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "pivot",
+              "encodings": {
+                "rows": [
+                  {
+                    "fieldName": "count_state",
+                    "displayTotal": true,
+                    "displayName": "Status"
+                  },
+                  {
+                    "fieldName": "pair_name",
+                    "displayTotal": true,
+                    "displayName": "Pair"
+                  },
+                  {
+                    "fieldName": "error_text",
+                    "displayTotal": true,
+                    "displayName": "Error message"
+                  }
+                ],
+                "cell": {
+                  "type": "multi-cell",
+                  "fields": [
+                    {
+                      "fieldName": "count(pair_name)",
+                      "cellType": "text",
+                      "displayName": "Checks"
+                    },
+                    {
+                      "fieldName": "max(query_date)",
+                      "cellType": "text",
+                      "displayName": "Latest"
+                    }
+                  ]
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Errors · click ▸ to expand",
+                "showDescription": false,
+                "description": ""
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 1,
+            "width": 6,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "an_history",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_history",
+                  "fields": [
+                    {
+                      "name": "query_date",
+                      "expression": "`query_date`"
+                    },
+                    {
+                      "name": "pair_name",
+                      "expression": "`pair_name`"
+                    },
+                    {
+                      "name": "status",
+                      "expression": "`status`"
+                    },
+                    {
+                      "name": "left_count",
+                      "expression": "`left_count`"
+                    },
+                    {
+                      "name": "right_count",
+                      "expression": "`right_count`"
+                    },
+                    {
+                      "name": "count_diff",
+                      "expression": "`count_diff`"
+                    },
+                    {
+                      "name": "left_partition",
+                      "expression": "`left_partition`"
+                    },
+                    {
+                      "name": "right_partition",
+                      "expression": "`right_partition`"
+                    },
+                    {
+                      "name": "error_message",
+                      "expression": "`error_message`"
+                    },
+                    {
+                      "name": "review_status",
+                      "expression": "`review_status`"
+                    },
+                    {
+                      "name": "age",
+                      "expression": "`age`"
+                    },
+                    {
+                      "name": "left_checked_at",
+                      "expression": "`left_checked_at`"
+                    },
+                    {
+                      "name": "right_checked_at",
+                      "expression": "`right_checked_at`"
+                    },
+                    {
+                      "name": "aws_name",
+                      "expression": "`aws_name`"
+                    },
+                    {
+                      "name": "config_version",
+                      "expression": "`config_version`"
+                    },
+                    {
+                      "name": "offset_days",
+                      "expression": "`offset_days`"
+                    },
+                    {
+                      "name": "left_target",
+                      "expression": "`left_target`"
+                    },
+                    {
+                      "name": "right_target",
+                      "expression": "`right_target`"
+                    },
+                    {
+                      "name": "left_query_variable",
+                      "expression": "`left_query_variable`"
+                    },
+                    {
+                      "name": "right_query_variable",
+                      "expression": "`right_query_variable`"
+                    },
+                    {
+                      "name": "left_conn_detail",
+                      "expression": "`left_conn_detail`"
+                    },
+                    {
+                      "name": "right_conn_detail",
+                      "expression": "`right_conn_detail`"
+                    },
+                    {
+                      "name": "timezone",
+                      "expression": "`timezone`"
+                    },
+                    {
+                      "name": "created_at",
+                      "expression": "`created_at`"
+                    },
+                    {
+                      "name": "updated_at",
+                      "expression": "`updated_at`"
+                    },
+                    {
+                      "name": "check_id",
+                      "expression": "`check_id`"
+                    },
+                    {
+                      "name": "count_state",
+                      "expression": "`count_state`"
+                    }
+                  ],
+                  "disaggregated": true,
+                  "orders": [
+                    {
+                      "direction": "DESC",
+                      "expression": "`query_date`"
+                    },
+                    {
+                      "direction": "ASC",
+                      "expression": "`pair_name`"
+                    },
+                    {
+                      "direction": "DESC",
+                      "expression": "`created_at`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "rowsPerPage": 50,
+              "displayRowNumbers": false,
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "query_date",
+                    "displayName": "Query date",
+                    "useForSearch": false,
+                    "format": {
+                      "type": "moment.js",
+                      "format": "YYYY-MM-DD"
+                    }
+                  },
+                  {
+                    "fieldName": "pair_name",
+                    "displayName": "Pair",
+                    "useForSearch": true,
+                    "columnWidth": 150
+                  },
+                  {
+                    "fieldName": "status",
+                    "displayName": "Status",
+                    "useForSearch": true,
+                    "style": {
+                      "type": "basic",
+                      "rules": [
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "ERROR"
+                            },
+                            "operator": "=",
+                            "fieldName": "count_state"
+                          },
+                          "backgroundColor": "#FDE2E1",
+                          "foregroundColor": "#A4161A"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "FAIL"
+                            },
+                            "operator": "=",
+                            "fieldName": "count_state"
+                          },
+                          "backgroundColor": "#FDE2E1",
+                          "foregroundColor": "#A4161A"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "WAITING_RIGHT"
+                            },
+                            "operator": "=",
+                            "fieldName": "count_state"
+                          },
+                          "backgroundColor": "#FFF3CD",
+                          "foregroundColor": "#7A5B00"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "PENDING_RIGHT"
+                            },
+                            "operator": "=",
+                            "fieldName": "count_state"
+                          },
+                          "backgroundColor": "#DCEEF6",
+                          "foregroundColor": "#075A73"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "NOT_RUN"
+                            },
+                            "operator": "=",
+                            "fieldName": "count_state"
+                          },
+                          "backgroundColor": "#ECEEF0",
+                          "foregroundColor": "#4A5560"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "SUCCESS"
+                            },
+                            "operator": "=",
+                            "fieldName": "count_state"
+                          },
+                          "backgroundColor": "#D4EDDA",
+                          "foregroundColor": "#155724"
+                        }
+                      ]
+                    },
+                    "columnWidth": 170
+                  },
+                  {
+                    "fieldName": "left_count",
+                    "displayName": "Left count",
+                    "useForSearch": false,
+                    "format": {
+                      "type": "number-plain",
+                      "abbreviation": "none",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 0
+                      }
+                    },
+                    "contentAlignment": "right"
+                  },
+                  {
+                    "fieldName": "right_count",
+                    "displayName": "Right count",
+                    "useForSearch": false,
+                    "format": {
+                      "type": "number-plain",
+                      "abbreviation": "none",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 0
+                      }
+                    },
+                    "contentAlignment": "right"
+                  },
+                  {
+                    "fieldName": "count_diff",
+                    "displayName": "Right − Left",
+                    "useForSearch": false,
+                    "format": {
+                      "type": "number-plain",
+                      "abbreviation": "none",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 0
+                      }
+                    },
+                    "contentAlignment": "right",
+                    "style": {
+                      "type": "basic",
+                      "rules": [
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "0"
+                            },
+                            "operator": ">",
+                            "fieldName": "count_diff"
+                          },
+                          "foregroundColor": "#A4161A"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "0"
+                            },
+                            "operator": "<",
+                            "fieldName": "count_diff"
+                          },
+                          "foregroundColor": "#A4161A"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "fieldName": "left_partition",
+                    "displayName": "Left partition",
+                    "useForSearch": true
+                  },
+                  {
+                    "fieldName": "right_partition",
+                    "displayName": "Right partition",
+                    "useForSearch": true
+                  },
+                  {
+                    "fieldName": "error_message",
+                    "displayName": "Error (hover)",
+                    "useForSearch": false,
+                    "actions": {
+                      "hover": {
+                        "type": "tooltip",
+                        "tooltipTemplate": "{{ @ }}"
+                      }
+                    },
+                    "columnWidth": 320
+                  },
+                  {
+                    "fieldName": "review_status",
+                    "displayName": "Review",
+                    "useForSearch": true,
+                    "style": {
+                      "type": "basic",
+                      "rules": [
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "CHECKED_FAILED"
+                            },
+                            "operator": "=",
+                            "fieldName": "review_status"
+                          },
+                          "backgroundColor": "#FDE2E1",
+                          "foregroundColor": "#A4161A"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "NOT_CHECKED"
+                            },
+                            "operator": "=",
+                            "fieldName": "review_status"
+                          },
+                          "backgroundColor": "#ECEEF0",
+                          "foregroundColor": "#4A5560"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "CHECKED_SUCCEEDED"
+                            },
+                            "operator": "=",
+                            "fieldName": "review_status"
+                          },
+                          "backgroundColor": "#D4EDDA",
+                          "foregroundColor": "#155724"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "fieldName": "age",
+                    "displayName": "Age",
+                    "useForSearch": true
+                  },
+                  {
+                    "fieldName": "left_checked_at",
+                    "displayName": "Left checked",
+                    "useForSearch": false,
+                    "format": {
+                      "type": "moment.js",
+                      "format": "YYYY-MM-DD HH:mm"
+                    }
+                  },
+                  {
+                    "fieldName": "right_checked_at",
+                    "displayName": "Right checked",
+                    "useForSearch": false,
+                    "format": {
+                      "type": "moment.js",
+                      "format": "YYYY-MM-DD HH:mm"
+                    }
+                  },
+                  {
+                    "fieldName": "aws_name",
+                    "displayName": "AWS name",
+                    "useForSearch": true
+                  },
+                  {
+                    "fieldName": "config_version",
+                    "displayName": "Config v",
+                    "useForSearch": false,
+                    "format": {
+                      "type": "number-plain",
+                      "abbreviation": "none",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 0
+                      }
+                    },
+                    "contentAlignment": "right"
+                  },
+                  {
+                    "fieldName": "offset_days",
+                    "displayName": "Offset",
+                    "useForSearch": false,
+                    "format": {
+                      "type": "number-plain",
+                      "abbreviation": "none",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 0
+                      }
+                    },
+                    "contentAlignment": "right"
+                  },
+                  {
+                    "fieldName": "left_target",
+                    "displayName": "Left target",
+                    "useForSearch": false,
+                    "actions": {
+                      "hover": {
+                        "type": "tooltip",
+                        "tooltipTemplate": "{{ @ }}"
+                      }
+                    },
+                    "columnWidth": 260
+                  },
+                  {
+                    "fieldName": "right_target",
+                    "displayName": "Right target",
+                    "useForSearch": false,
+                    "actions": {
+                      "hover": {
+                        "type": "tooltip",
+                        "tooltipTemplate": "{{ @ }}"
+                      }
+                    },
+                    "columnWidth": 260
+                  },
+                  {
+                    "fieldName": "left_query_variable",
+                    "displayName": "Left var",
+                    "useForSearch": true
+                  },
+                  {
+                    "fieldName": "right_query_variable",
+                    "displayName": "Right var",
+                    "useForSearch": true
+                  },
+                  {
+                    "fieldName": "left_conn_detail",
+                    "displayName": "Left conn JSON",
+                    "useForSearch": false,
+                    "actions": {
+                      "hover": {
+                        "type": "tooltip",
+                        "tooltipTemplate": "{{ @ }}"
+                      }
+                    },
+                    "columnWidth": 260
+                  },
+                  {
+                    "fieldName": "right_conn_detail",
+                    "displayName": "Right conn JSON",
+                    "useForSearch": false,
+                    "actions": {
+                      "hover": {
+                        "type": "tooltip",
+                        "tooltipTemplate": "{{ @ }}"
+                      }
+                    },
+                    "columnWidth": 260
+                  },
+                  {
+                    "fieldName": "timezone",
+                    "displayName": "Timezone",
+                    "useForSearch": true
+                  },
+                  {
+                    "fieldName": "created_at",
+                    "displayName": "Created",
+                    "useForSearch": false,
+                    "format": {
+                      "type": "moment.js",
+                      "format": "YYYY-MM-DD HH:mm"
+                    }
+                  },
+                  {
+                    "fieldName": "updated_at",
+                    "displayName": "Updated",
+                    "useForSearch": false,
+                    "format": {
+                      "type": "moment.js",
+                      "format": "YYYY-MM-DD HH:mm"
+                    }
+                  },
+                  {
+                    "fieldName": "check_id",
+                    "displayName": "check_id",
+                    "useForSearch": false,
+                    "actions": {
+                      "hover": {
+                        "type": "tooltip",
+                        "tooltipTemplate": "{{ @ }}"
+                      }
+                    }
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Check history",
+                "showDescription": true,
+                "description": "Widget menu ⋮ → Download exports the filtered rows."
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 6,
+            "width": 12,
+            "height": 10
+          }
+        },
+        {
+          "widget": {
+            "name": "an_config",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_config",
+                  "fields": [
+                    {
+                      "name": "pair_name",
+                      "expression": "`pair_name`"
+                    },
+                    {
+                      "name": "config_version",
+                      "expression": "`config_version`"
+                    },
+                    {
+                      "name": "review_status",
+                      "expression": "`review_status`"
+                    },
+                    {
+                      "name": "aws_name",
+                      "expression": "`aws_name`"
+                    },
+                    {
+                      "name": "offset_days",
+                      "expression": "`offset_days`"
+                    },
+                    {
+                      "name": "left_target",
+                      "expression": "`left_target`"
+                    },
+                    {
+                      "name": "right_target",
+                      "expression": "`right_target`"
+                    },
+                    {
+                      "name": "left_query_variable",
+                      "expression": "`left_query_variable`"
+                    },
+                    {
+                      "name": "right_query_variable",
+                      "expression": "`right_query_variable`"
+                    },
+                    {
+                      "name": "left_conn_detail",
+                      "expression": "`left_conn_detail`"
+                    },
+                    {
+                      "name": "right_conn_detail",
+                      "expression": "`right_conn_detail`"
+                    },
+                    {
+                      "name": "timezone",
+                      "expression": "`timezone`"
+                    },
+                    {
+                      "name": "created_at",
+                      "expression": "`created_at`"
+                    },
+                    {
+                      "name": "check_id",
+                      "expression": "`check_id`"
+                    }
+                  ],
+                  "disaggregated": true,
+                  "orders": [
+                    {
+                      "direction": "ASC",
+                      "expression": "`pair_name`"
+                    },
+                    {
+                      "direction": "DESC",
+                      "expression": "`config_version`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "rowsPerPage": 25,
+              "displayRowNumbers": false,
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "pair_name",
+                    "displayName": "Pair",
+                    "useForSearch": true,
+                    "columnWidth": 150
+                  },
+                  {
+                    "fieldName": "config_version",
+                    "displayName": "Config v",
+                    "useForSearch": false,
+                    "format": {
+                      "type": "number-plain",
+                      "abbreviation": "none",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 0
+                      }
+                    },
+                    "contentAlignment": "right"
+                  },
+                  {
+                    "fieldName": "review_status",
+                    "displayName": "Review",
+                    "useForSearch": true,
+                    "style": {
+                      "type": "basic",
+                      "rules": [
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "CHECKED_FAILED"
+                            },
+                            "operator": "=",
+                            "fieldName": "review_status"
+                          },
+                          "backgroundColor": "#FDE2E1",
+                          "foregroundColor": "#A4161A"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "NOT_CHECKED"
+                            },
+                            "operator": "=",
+                            "fieldName": "review_status"
+                          },
+                          "backgroundColor": "#ECEEF0",
+                          "foregroundColor": "#4A5560"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "CHECKED_SUCCEEDED"
+                            },
+                            "operator": "=",
+                            "fieldName": "review_status"
+                          },
+                          "backgroundColor": "#D4EDDA",
+                          "foregroundColor": "#155724"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "fieldName": "aws_name",
+                    "displayName": "AWS name",
+                    "useForSearch": true
+                  },
+                  {
+                    "fieldName": "offset_days",
+                    "displayName": "Offset",
+                    "useForSearch": false,
+                    "format": {
+                      "type": "number-plain",
+                      "abbreviation": "none",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 0
+                      }
+                    },
+                    "contentAlignment": "right"
+                  },
+                  {
+                    "fieldName": "left_target",
+                    "displayName": "Left target",
+                    "useForSearch": false,
+                    "actions": {
+                      "hover": {
+                        "type": "tooltip",
+                        "tooltipTemplate": "{{ @ }}"
+                      }
+                    },
+                    "columnWidth": 260
+                  },
+                  {
+                    "fieldName": "right_target",
+                    "displayName": "Right target",
+                    "useForSearch": false,
+                    "actions": {
+                      "hover": {
+                        "type": "tooltip",
+                        "tooltipTemplate": "{{ @ }}"
+                      }
+                    },
+                    "columnWidth": 260
+                  },
+                  {
+                    "fieldName": "left_query_variable",
+                    "displayName": "Left var",
+                    "useForSearch": true
+                  },
+                  {
+                    "fieldName": "right_query_variable",
+                    "displayName": "Right var",
+                    "useForSearch": true
+                  },
+                  {
+                    "fieldName": "left_conn_detail",
+                    "displayName": "Left conn JSON",
+                    "useForSearch": false,
+                    "actions": {
+                      "hover": {
+                        "type": "tooltip",
+                        "tooltipTemplate": "{{ @ }}"
+                      }
+                    },
+                    "columnWidth": 260
+                  },
+                  {
+                    "fieldName": "right_conn_detail",
+                    "displayName": "Right conn JSON",
+                    "useForSearch": false,
+                    "actions": {
+                      "hover": {
+                        "type": "tooltip",
+                        "tooltipTemplate": "{{ @ }}"
+                      }
+                    },
+                    "columnWidth": 260
+                  },
+                  {
+                    "fieldName": "timezone",
+                    "displayName": "Timezone",
+                    "useForSearch": true
+                  },
+                  {
+                    "fieldName": "created_at",
+                    "displayName": "Created",
+                    "useForSearch": false,
+                    "format": {
+                      "type": "moment.js",
+                      "format": "YYYY-MM-DD HH:mm"
+                    }
+                  },
+                  {
+                    "fieldName": "check_id",
+                    "displayName": "check_id",
+                    "useForSearch": false,
+                    "actions": {
+                      "hover": {
+                        "type": "tooltip",
+                        "tooltipTemplate": "{{ @ }}"
+                      }
+                    }
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Configuration snapshots",
+                "showDescription": true,
+                "description": "Rows with no query_date; date and status filters do not apply."
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 16,
+            "width": 12,
+            "height": 5
+          }
+        }
+      ]
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "widgetHeaderAlignment": "ALIGNMENT_UNSPECIFIED"
+    },
+    "applyModeEnabled": false
+  }
+}

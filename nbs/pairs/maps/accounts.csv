@@ -1,6 +1,0 @@
-left,right,type
-ACCT_ID,acct_id,
-BRANCH_CD,branch_cd,categorical
-BALANCE,balance,numeric
-OPEN_DT,open_dt,
-PRODUCT,product,categorical
